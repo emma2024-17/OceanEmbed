@@ -1,0 +1,12 @@
+streamlit
+torch
+xarray
+netCDF4
+numpy
+pandas
+matplotlib
+scikit-learn
+gdown
+xarray
+netcdf4
+h5netcdf
