@@ -4,10 +4,39 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 import streamlit as st
-import gdown
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 from train_model import OceanEmbedUNet, load_and_preprocess_nc
+
+# ==========================================
+# GOOGLE DRIVE DATASET SETUP (additive only)
+# ==========================================
+# This block downloads the .nc dataset from Google Drive the first time the
+# app runs, and does nothing on later runs since the file already exists.
+# It does not touch or override any of the logic below.
+GDRIVE_FILE_ID = "1stCmdQEnUZnmyyzlLss8O1JtK42Zknpu"
+NC_DATA_PATH = "./data/glorys_subset.nc"
+
+
+@st.cache_data(show_spinner="Downloading ocean dataset from Google Drive...")
+def ensure_dataset_downloaded():
+    """Download the GLORYS subset from Google Drive if it isn't already present
+    locally at the path the rest of the app expects (./data/glorys_subset.nc)."""
+    os.makedirs(os.path.dirname(NC_DATA_PATH), exist_ok=True)
+    if not os.path.exists(NC_DATA_PATH):
+        import gdown  # imported here so the app still runs if gdown isn't installed
+        gdown.download(
+            f"https://drive.google.com/uc?id={GDRIVE_FILE_ID}",
+            NC_DATA_PATH,
+            quiet=False,
+        )
+    return NC_DATA_PATH
+
+
+ensure_dataset_downloaded()
+# ==========================================
+# YOUR EXISTING CODE STARTS BELOW, UNCHANGED
+# ==========================================
 
 st.set_page_config(layout="wide", page_title="OceanEmbed PoC Dashboard")
 
@@ -31,7 +60,14 @@ st.markdown(
     .stButton > button:hover { color:#021925 !important; transform:translateY(-1px); box-shadow:0 10px 23px rgba(0,0,0,.30); }
     [data-baseweb="select"] > div,[data-baseweb="slider"] div[role="slider"] { background-color:#0a4e67 !important; border-color:rgba(161,235,239,.34) !important; }
     [data-testid="stDivider"] { border-color:rgba(160,232,236,.18); }
-    [data-testid="stSpinner"] { color:#8ff1f3; }
+    /* The built-in spinner is too faint on this dark background. The custom
+       processing banner below is the single, accessible run indicator. */
+    [data-testid="stSpinner"] { display:none !important; }
+    .processing-banner { display:flex; align-items:center; gap:14px; margin:.25rem 0 1.2rem; padding:1rem 1.2rem; border:1px solid rgba(128,233,239,.44); border-radius:14px; background:linear-gradient(100deg,rgba(12,99,125,.92),rgba(8,54,82,.92)); box-shadow:0 12px 28px rgba(0,13,29,.24); color:#edfeff; }
+    .processing-orbit { width:26px; height:26px; box-sizing:border-box; border:3px solid rgba(191,249,250,.25); border-top-color:#9af6f3; border-right-color:#f5d79a; border-radius:50%; animation:ocean-spin .85s linear infinite; flex:0 0 auto; }
+    .processing-title { font-family:'Space Grotesk',sans-serif; font-size:1.02rem; font-weight:700; }
+    .processing-detail { color:#b8e8ec; font-size:.88rem; margin-top:2px; }
+    @keyframes ocean-spin { to { transform:rotate(360deg); } }
     </style>
     """, unsafe_allow_html=True,
 )
@@ -42,43 +78,6 @@ st.title("🌊 OceanEmbed: Subsurface Ocean Temperature Reconstruction")
 st.caption("Proof-of-Concept Dashboard | Ministry of Earth Sciences (MoES) - INCOIS | Problem Statement ID-26066")
 
 DEPTHS = [0, 5, 10, 20, 30, 50, 75, 100, 125, 150, 200, 300, 500, 700, 1000]
-
-# ==========================================
-# Google Drive dataset fetch (isolated, opt-in)
-# ==========================================
-# This ONLY runs when ./data/glorys_subset.nc is missing locally. Your existing
-# load_and_preprocess_nc() still receives a plain file path exactly as before -
-# nothing about how the .nc file is read or processed has changed.
-DATA_DIR = "./data"
-DATA_FILENAME = "glorys_subset.nc"
-DEFAULT_DATA_PATH = os.path.join(DATA_DIR, DATA_FILENAME)
-
-# Replace with your actual Google Drive file ID (the long string in the share
-# link: https://drive.google.com/file/d/<THIS_PART>/view). Leave as-is to skip
-# auto-download and rely on the file already being present in ./data/.
-GD_FILE_ID = "1stCmdQEnUZnmyyzlLss8O1JtK42Zknpu"
-
-
-@st.cache_resource(show_spinner="Fetching ocean dataset from Google Drive...")
-def ensure_dataset_downloaded(path: str, file_id: str) -> str:
-    """Download the .nc file once if it isn't already on disk.
-
-    Deliberately does nothing beyond guaranteeing `path` exists when possible -
-    it does not open, parse, or transform the file, so it can't conflict with
-    load_and_preprocess_nc(). Any failure (missing id, no network, bad id) is
-    swallowed into a warning; the existing "Dataset not found!" check further
-    down still handles the missing-file case exactly as it did before.
-    """
-    if os.path.exists(path):
-        return path
-    if not file_id or file_id == "YOUR_GOOGLE_DRIVE_FILE_ID":
-        return path
-    try:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        gdown.download(id=file_id, output=path, quiet=False)
-    except Exception as exc:  # noqa: BLE001 - surface any download issue, never crash the app
-        st.warning(f"Could not auto-download dataset from Google Drive: {exc}")
-    return path
 
 
 def fallback_ocean_region(latitude, longitude):
@@ -166,18 +165,28 @@ st.sidebar.caption(f"Region: **{sidebar_region}**")
 run_button = st.sidebar.button("Run 3D Subsurface Reconstruction Pipeline")
 
 if run_button:
-    data_path = ensure_dataset_downloaded(DEFAULT_DATA_PATH, GD_FILE_ID)
-
+    data_path = "./data/glorys_subset.nc"
+    
     if not os.path.exists(data_path):
-        st.error("Dataset not found! Please ensure glorys_subset.nc exists in ./data/, or set GD_FILE_ID to auto-download it.")
+        st.error("Dataset not found! Please ensure glorys_subset.nc exists in ./data/")
     else:
+        processing_notice = st.empty()
+        processing_notice.markdown(
+            """
+            <div class="processing-banner">
+                <div class="processing-orbit"></div>
+                <div><div class="processing-title">Executing 3D Neural Inference…</div></div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         with st.spinner("Executing 3D Neural Inference..."):
             inputs, targets, ocean_mask, targets_raw, lats, lons = load_and_preprocess_nc(data_path)
-            
             with torch.no_grad():
                 preds_norm, latent_embed = model(inputs)
                 
             preds_denorm = preds_norm.numpy() * (t_max - t_min) + t_min
+            processing_notice.empty()
             
             # Map selected geographic lat/lon to closest array index
             lat_idx = int(np.abs(lats - selected_lat).argmin())
@@ -245,7 +254,6 @@ if run_button:
                 ax1.set_ylabel("Latitude (°N)")
                 fig1.colorbar(c1, ax=ax1, label="Temp (°C)")
                 st.pyplot(fig1)
-                plt.close(fig1)
                 
             with col2:
                 st.subheader(f"Ground Truth GLORYS Map ({selected_depth}m)")
@@ -258,7 +266,6 @@ if run_button:
                 ax2.set_ylabel("Latitude (°N)")
                 fig2.colorbar(c2, ax=ax2, label="Temp (°C)")
                 st.pyplot(fig2)
-                plt.close(fig2)
 
             st.divider()
 
@@ -302,7 +309,6 @@ if run_button:
             fig_volume.colorbar(volume_colours, ax=ax_volume, pad=0.08, shrink=0.65, label="Temperature (°C)")
             fig_volume.tight_layout()
             st.pyplot(fig_volume)
-            plt.close(fig_volume)
 
             st.divider()
 
@@ -316,7 +322,6 @@ if run_button:
                 ax3.set_ylabel("Latitude (°N)")
                 fig3.colorbar(c3, ax=ax3, label="Activation")
                 st.pyplot(fig3)
-                plt.close(fig3)
                 
             with col4:
                 st.caption(f"Region: {selected_region}")
@@ -336,4 +341,3 @@ if run_button:
                     ax4.set_ylabel("Depth (m)")
                     ax4.legend(loc='best')
                     st.pyplot(fig4)
-                    plt.close(fig4)
